@@ -1,3 +1,20 @@
+"""
+Web Mercator Ground Resolution Calculator
+
+Calculates ground resolution (meters per pixel) across zoom levels and latitudes
+for Web Mercator projection (EPSG:3857), commonly used in web mapping systems.
+
+Ground resolution varies by:
+- Zoom level: doubles with each increment
+- Latitude: decreases toward poles due to Mercator distortion
+
+Formula: resolution = (earth_circumference * cos(lat)) / (tile_size * 2^zoom)
+
+Constants:
+    earth_circumference: Earth's equatorial circumference in meters
+    tile_size: Standard web map tile dimension (256x256 pixels)
+"""
+
 import numpy as np
 import pandas as pd
 
