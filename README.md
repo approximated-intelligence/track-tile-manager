@@ -70,7 +70,7 @@ The format string supports these placeholders:
 - `{z}` - zoom level
 - `{x}` - tile X coordinate
 - `{y}` - tile Y coordinate
-- `{q}` - quadkey (automatically computed from x, y, z for Bing/Virtual Earth)
+- `{q}` - quadkey (automatically computed from x, y, z)
 
 Default format: `{url}/{z}/{x}/{y}.png`
 
