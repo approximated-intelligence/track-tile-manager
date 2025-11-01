@@ -108,7 +108,7 @@ For legitimate offline usage, use providers that explicitly allow tile caching.
 Download tiles with 1km buffer, zoom 10-15:
 
 ```bash
-uv run download_track_tiles.py -b 1000 -z 10 15 https://tile.server.com route.gpx maps.mbtiles
+uv run download_track_tiles.py --buffer 1000 --zoom 10 15 https://tile.server.com route.gpx maps.mbtiles
 ```
 
 Add corner-based expansion for better centering:
@@ -117,13 +117,13 @@ Add corner-based expansion for better centering:
 uv run download_track_tiles.py --corner-expand https://tile.server.com route.gpx maps.mbtiles
 ```
 
-Add 1 extra tile in all direction:
+Add 1 extra tile in all directions:
 
 ```bash
 uv run download_track_tiles.py --tile-buffer 1 https://tile.server.com route.gpx maps.mbtiles
 ```
 
-Combine multiple strategies (500m buffer around track, tiles at corner, 1 extra tile in all direction)
+Combine multiple strategies (100m buffer around track, tiles at corner, 1 extra tile in all direction)
 
 ```bash
 uv run download_track_tiles.py --buffer 100m --corner-expand --tile-buffer 1 https://tile.server.com route.gpx maps.mbtiles
@@ -144,15 +144,15 @@ The downloader performs the following steps:
 2. Creates oblique Mercator projection aligned with track direction
 3. Buffers track by specified distance (accurate perpendicular buffering)
 4. Calculates which tiles intersect the buffered area at each zoom level
-5. Optionally applies tile expansion strategies
+5. Optionally applies different tile expansion strategies
 6. Downloads tiles with retry logic and caching
 7. Writes MBTiles database
 
-The oblique Mercator projection minimizes distortion along the route and ensures accurate metric buffering perpendicular to the track direction.
+The oblique Mercator projection minimizes distortion along the route and ensures accurate metric buffer calculation along the track.
 
 ### Tile expansion strategies
 
-After the initial meter-based buffer selection, you can apply additional tile expansion:
+After the initial meter-based buffer shape computation and tile selection, you can apply additional tile expansion:
 
 **Corner expansion (--corner-expand)**: For each track point, determines which quadrant of its tile the point falls into and downloads the 3 neighboring tiles that share that corner. This keeps your track better centered within the downloaded tile set. The expansion is adaptive based on where your actual track falls within each tile.
 
