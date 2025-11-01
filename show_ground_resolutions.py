@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Web Mercator Ground Resolution Calculator
 
@@ -14,7 +15,6 @@ Constants:
     earth_circumference: Earth's equatorial circumference in meters
     tile_size: Standard web map tile dimension (256x256 pixels)
 """
-
 import numpy as np
 import pandas as pd
 
