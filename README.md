@@ -23,7 +23,7 @@ Requires Python 3.8+. Use with `uv`:
 
 ```bash
 # Run directly without installing
-uvx --from https://github.com/project-url download-track-tiles https://tile.openstreetmap.org track.gpx output.mbtiles
+uvx --from git+https://github.com/approximated-intelligence/track-tile-manager download-track-tiles https://tile.openstreetmap.org track.gpx output.mbtiles
 
 # Or install dependencies and run
 uv sync
