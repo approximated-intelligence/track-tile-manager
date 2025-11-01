@@ -210,6 +210,6 @@ The downloader includes a persistent cache in `~/.cache/track_tiles/` to avoid r
 - Pillow for image format conversion
 - numpy for numerical operations
 
-## [License](Licence.md)
+## [License](LICENSE)
 
 Use at your own risk. Be respectful of tile server resources.
