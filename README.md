@@ -10,8 +10,8 @@ Useful for preparing offline maps for hiking/biking trips, caching tiles for are
 
 ## Features
 
-- Geodetically accurate buffering using oblique Mercator projection
-- Configurable buffer distance and zoom levels
+- Geodetically accurate buffer zone along track
+- Configurable buffer distance and tile zoom levels
 - Two additional tile expansion strategies for better coverage
 - Optional JPEG compression to save space
 - Automatic retry with exponential backoff on errors
