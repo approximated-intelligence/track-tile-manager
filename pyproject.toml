@@ -1,0 +1,29 @@
+[project]
+name = "track-tile-manager"
+version = "0.9.1"
+description = "Download XYZ tiles along GPX tracks for offline use in OsmAnd"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "gpxpy>=1.6.2",
+    "mercantile>=1.2.1",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+    "pyproj>=3.6.0",
+    "shapely>=2.0.0",
+    "numpy>=1.24.0",
+    "pandas>=2.3.3",
+]
+
+[project.scripts]
+download-track-tiles = "download_track_tiles:main"
+merge-tile-databases = "merge_tile_databases:main"
+show-ground-resolutions = "show_ground_resolutions:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
