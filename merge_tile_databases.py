@@ -1,7 +1,32 @@
 #!/usr/bin/env python3
 """
 Track Tile Merge - Combine multiple MBTiles databases into one
+
+This module provides functionality to merge multiple MBTiles (map tile) databases
+into a single unified database. MBTiles is a specification for storing tiled map
+data in SQLite databases, commonly used for offline maps and tile servers.
+
+The merger handles:
+- Tile deduplication (skips tiles that already exist at the same z/x/y coordinates)
+- Metadata consolidation from source databases
+- Bounding box computation across all inputs
+- Zoom level range merging
+
+Usage:
+    Command line:
+        $ track_tile_merge.py track1.mbtiles track2.mbtiles output.mbtiles
+        $ track_tile_merge.py -f input1.mbtiles input2.mbtiles merged.mbtiles
+    
+    As a module:
+        from track_tile_merge import merge_mbtiles, get_mbtiles_stats
+        
+        stats = get_mbtiles_stats(conn)
+        merge_mbtiles(output_path, [input1, input2], force=False)
+
+References:
+    MBTiles Specification: https://github.com/mapbox/mbtiles-spec
 """
+
 import argparse
 import sqlite3
 import sys
