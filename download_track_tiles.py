@@ -146,6 +146,58 @@ def detect_image_format(data: bytes) -> str:
         raise ValueError(f"Unsupported image format: {fmt}")
 
 
+def estimate_jpeg_quality(data: bytes) -> Optional[int]:
+    """
+    Estimate JPEG quality from quantization tables using IJG scaling formula.
+    Returns None if not JPEG or tables unavailable.
+    """
+    im = Image.open(io.BytesIO(data))
+    
+    if im.format != 'JPEG':
+        return None
+    
+    qtables = im.quantization
+    if not qtables or 0 not in qtables:
+        return None
+    
+    actual = list(qtables[0])
+    if len(actual) < 64:
+        return None
+    
+    # IJG standard quantization table (quality 50 baseline)
+    ijg_q50_luma = [
+        16, 11, 10, 16, 24, 40, 51, 61,
+        12, 12, 14, 19, 26, 58, 60, 55,
+        14, 13, 16, 24, 40, 57, 69, 56,
+        14, 17, 22, 29, 51, 87, 80, 62,
+        18, 22, 37, 56, 68, 109, 103, 77,
+        24, 35, 55, 64, 81, 104, 113, 92,
+        49, 64, 78, 87, 103, 121, 120, 101,
+        72, 92, 95, 98, 112, 100, 103, 99,
+    ]
+    
+    # Reverse the formula: actual[i] = floor((S * base[i] + 50) / 100)
+    # Approximate: S ≈ (actual[i] * 100) / base[i]
+    ratios = []
+    for i in range(64):
+        if ijg_q50_luma[i] > 0:
+            # Compute S percentage from: actual ≈ (S * base + 50) / 100
+            s_estimate = (actual[i] * 100) / ijg_q50_luma[i]
+            ratios.append(s_estimate)
+    
+    if not ratios:
+        return None
+    
+    avg_s = sum(ratios) / len(ratios)
+    
+    # Reverse: if Q < 50: S = 5000/Q, else S = 200 - 2*Q
+    if avg_s > 100:  # Q < 50
+        quality = 5000 / avg_s
+    else:  # Q >= 50
+        quality = (200 - avg_s) / 2
+    
+    return int(round(max(1, min(100, quality))))
+
 def normalize_tile_format(
     data: bytes, target_format: str, jpeg_quality: int = 85
 ) -> bytes:
@@ -357,6 +409,12 @@ def download_tiles(
             if detected_format is None:
                 detected_format = detect_image_format(data)
                 pbar.write(f"Detected tile format: {detected_format}")
+
+                # Detect quality if JPEG
+                if detected_format == "jpg":
+                    detected_quality = estimate_jpeg_quality(data)
+                    if detected_quality:
+                        pbar.write(f"Detected JPEG quality: ~{detected_quality}")
 
             if force_format:
                 data = normalize_tile_format(data, force_format, jpeg_quality)
@@ -741,26 +799,6 @@ def get_bbox_wgs84_from_track_projection(
     return west, south, east, north
 
 
-def tiles_intersecting_polygon(polygon_wgs84, zoom_min, zoom_max):
-    """Return only tiles whose polygons intersect the given polygon."""
-    all_tiles = set()
-
-    for zoom in range(zoom_min, zoom_max + 1):
-        # Get bounding box of the polygon
-        west, south, east, north = polygon_wgs84.bounds
-
-        for tile in mercantile.tiles(west, south, east, north, zooms=zoom):
-            # Get tile bounds as polygon
-            tb = mercantile.bounds(tile)
-            tile_poly = box(tb.west, tb.south, tb.east, tb.north)
-
-            # Keep only if it intersects the buffered track polygon
-            if polygon_wgs84.intersects(tile_poly):
-                all_tiles.add((tile.x, tile.y, tile.z))
-
-    return all_tiles
-
-
 # ============================================================================
 # Pure Functions - Tile Enumeration
 # ============================================================================
@@ -797,33 +835,6 @@ def tiles_for_track(polygon_wgs84, zoom_min, zoom_max) -> Set[TileCoord]:
             if prepared.intersects(tile_poly):
                 tiles.add((tile.x, tile.y, tile.z))
     return tiles
-
-
-# ============================================================================
-# Pure Functions - Image Conversion
-# ============================================================================
-
-
-def convert_to_jpeg(raw_bytes: bytes, quality: int) -> bytes:
-    """Convert tile image to JPEG with specified quality"""
-    im = Image.open(io.BytesIO(raw_bytes))
-    im = im.convert("RGB")
-    stream = io.BytesIO()
-    im.save(stream, format="JPEG", subsampling=0, quality=quality)
-    return stream.getvalue()
-
-
-# ============================================================================
-# Pure Functions - OsmAnd Coordinate Transform
-# ============================================================================
-
-
-def mbtiles_to_osmand_coords(x: int, y: int, z: int) -> Tuple[int, int, int, int]:
-    """Transform MBTiles coordinates to OsmAnd format"""
-    y_osmand = 2**z - 1 - y  # Flip Y axis
-    z_osmand = 17 - z  # Invert zoom
-    s = 0  # Always 0 for OsmAnd
-    return x, y_osmand, z_osmand, s
 
 
 # ============================================================================
