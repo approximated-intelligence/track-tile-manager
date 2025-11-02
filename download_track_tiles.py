@@ -196,7 +196,8 @@ def estimate_jpeg_quality(data: bytes) -> Optional[int]:
     else:  # Q >= 50
         quality = (200 - avg_s) / 2
     
-    return int(max(1, min(100, quality)))
+    return int(round(max(1, min(100, quality))))
+
 
 def normalize_tile_format(
     data: bytes, target_format: str, jpeg_quality: int = 85
