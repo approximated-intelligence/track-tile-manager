@@ -16,10 +16,10 @@ Usage:
     Command line:
         $ track_tile_merge.py track1.mbtiles track2.mbtiles output.mbtiles
         $ track_tile_merge.py -f input1.mbtiles input2.mbtiles merged.mbtiles
-    
+
     As a module:
         from track_tile_merge import merge_mbtiles, get_mbtiles_stats
-        
+
         stats = get_mbtiles_stats(conn)
         merge_mbtiles(output_path, [input1, input2], force=False)
 
