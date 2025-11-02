@@ -187,11 +187,21 @@ def xyz_to_quadkey(x: int, y: int, z: int) -> str:
     return "".join(quadkey)
 
 
+# ============================================================================
+# I/O Functions - Cached DB Connection
+# ============================================================================
+
+
 @lru_cache(maxsize=None)
 def get_conn(db_path: Path) -> sqlite3.Connection:
     """Return a persistent SQLite connection for a given DB path"""
     conn = sqlite3.connect(db_path)
     return conn
+
+
+# ============================================================================
+# I/O Functions - Cached HTTP Downloads
+# ============================================================================
 
 
 @lru_cache(maxsize=None)
@@ -217,11 +227,16 @@ def init_cache_db(db_path: Path) -> None:
     conn.close()
 
 
-def cached_requests_get(url: str, **kwargs) -> bytes:
+def cached_requests_get(
+    url: str, *, session: Optional[requests.Session] = None, **kwargs
+) -> bytes:
     """
     Wrapper around requests.get() with caching.
     Returns tile data directly as bytes.
     """
+    if session is None:
+        session = requests.Session()
+
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -239,8 +254,8 @@ def cached_requests_get(url: str, **kwargs) -> bytes:
     if result:
         return result[0]
 
-    # Cache miss - make real request
-    response = requests.get(url, **kwargs)
+    # Cache miss - make real request with session
+    response = session.get(url, **kwargs)
 
     if response.status_code != 200:
         raise requests.HTTPError(f"HTTP {response.status_code}")
@@ -253,6 +268,156 @@ def cached_requests_get(url: str, **kwargs) -> bytes:
     conn.commit()
 
     return response.content
+
+
+# ============================================================================
+# I/O Functions - HTTP Download
+# ============================================================================
+
+
+def download_single_tile(
+    url_format: str,
+    base_url: str,
+    x: int,
+    y: int,
+    z: int,
+    *,
+    session: Optional[requests.Session] = None,
+) -> bytes:
+    """
+    Download single tile with exponential backoff on server errors.
+    Returns tile data as bytes.
+    """
+    max_retries = 5
+    base_delay = 1.0
+
+    for attempt in range(max_retries):
+        try:
+            # Compute quadkey for Virtual Earth / Bing Maps
+            quadkey = xyz_to_quadkey(x, y, z)
+
+            # Format URL with all available placeholders
+            url = url_format.format(url=base_url, x=x, y=y, z=z, q=quadkey)
+
+            return cached_requests_get(url, session=session, timeout=30)
+
+        except requests.HTTPError as e:
+            # Check if it's a server error (5xx)
+            if "500" <= str(e).split()[1] < "600":
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2**attempt)
+                    print(
+                        f"  Server error for tile ({x},{y},{z}), "
+                        f"retrying in {delay:.1f}s...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+            else:
+                # Client error - don't retry
+                raise
+
+        except requests.RequestException as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2**attempt)
+                print(
+                    f"  Network error for tile ({x},{y},{z}): {e}, "
+                    f"retrying in {delay:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            else:
+                raise
+
+    raise requests.HTTPError(f"Failed to download tile after {max_retries} attempts")
+
+
+def download_tiles(
+    tiles: Set[TileCoord],
+    url_format: str,
+    base_url: str,
+    *,
+    session: Optional[requests.Session] = None,
+    force_format: Optional[str] = None,
+    jpeg_quality: int = 85,
+) -> Tuple[Dict[TileCoord, bytes], str]:
+    """Download all tiles and normalize format. Returns (tiles, format)"""
+    tile_data = {}
+    detected_format = None
+    total = len(tiles)
+
+    sorted_tiles = sorted(tiles, key=lambda t: (t[2], t[0], t[1]))
+
+    with tqdm(total=total, desc="Downloading tiles", unit="tile") as pbar:
+        for x, y, z in sorted_tiles:
+            data = download_single_tile(url_format, base_url, x, y, z, session=session)
+
+            # Detect format from first tile
+            if detected_format is None:
+                detected_format = detect_image_format(data)
+                pbar.write(f"Detected tile format: {detected_format}")
+
+            if force_format:
+                data = normalize_tile_format(data, force_format, jpeg_quality)
+
+            tile_data[(x, y, z)] = data
+            pbar.update(1)
+
+    final_format = force_format or detected_format
+    return tile_data, final_format
+
+
+# ============================================================================
+# I/O Functions - MBTiles Database
+# ============================================================================
+
+
+def create_mbtiles(path: Path, metadata: Dict[str, str]) -> sqlite3.Connection:
+    """Create MBTiles database with schema and metadata"""
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+
+    # Create tables
+    cur.execute(
+        """
+        CREATE TABLE metadata (name TEXT, value TEXT)
+    """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE tiles (
+            zoom_level INTEGER,
+            tile_column INTEGER,
+            tile_row INTEGER,
+            tile_data BLOB,
+            PRIMARY KEY (zoom_level, tile_column, tile_row)
+        )
+    """
+    )
+
+    # Insert metadata
+    for name, value in metadata.items():
+        cur.execute("INSERT INTO metadata (name, value) VALUES (?, ?)", (name, value))
+
+    conn.commit()
+    return conn
+
+
+def write_tiles_batch(conn: sqlite3.Connection, tiles: Dict[TileCoord, bytes]) -> None:
+    """Write tiles to MBTiles database (TMS coordinates)"""
+    cur = conn.cursor()
+
+    for (x, y, z), data in tqdm(tiles.items(), desc="Writing tiles", unit="tile"):
+        y_tms = (2**z - 1) - y
+        cur.execute(
+            "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) "
+            "VALUES (?, ?, ?, ?)",
+            (z, x, y_tms, sqlite3.Binary(data)),
+        )
+
+    conn.commit()
 
 
 # ============================================================================
@@ -528,9 +693,7 @@ def create_track_transformers(coords_wgs84: List[LatLon]) -> TrackTransformers:
     azimuth = np.degrees(np.arctan2(sin_weighted, cos_weighted))
 
     # Build the oblique Mercator projection string
-    print(
-        f"  Oblique Mercator, center: {center_lon}, {center_lat}, azimuth: {azimuth}"
-    )
+    print(f"  Oblique Mercator, center: {center_lon}, {center_lat}, azimuth: {azimuth}")
     omerc_proj = (
         f"+proj=omerc +lat_0={center_lat} +lonc={center_lon} "
         f"+alpha={azimuth} +datum=WGS84 +units=m"
@@ -664,146 +827,6 @@ def mbtiles_to_osmand_coords(x: int, y: int, z: int) -> Tuple[int, int, int, int
 
 
 # ============================================================================
-# I/O Functions - HTTP Download
-# ============================================================================
-
-
-def download_single_tile(url_format, base_url, x, y, z) -> bytes:
-    """
-    Download single tile with exponential backoff on server errors.
-    Returns tile data as bytes.
-    """
-    max_retries = 5
-    base_delay = 1.0
-
-    for attempt in range(max_retries):
-        try:
-            # Compute quadkey for Virtual Earth / Bing Maps
-            quadkey = xyz_to_quadkey(x, y, z)
-
-            # Format URL with all available placeholders
-            url = url_format.format(url=base_url, x=x, y=y, z=z, q=quadkey)
-
-            return cached_requests_get(url, timeout=30)
-
-        except requests.HTTPError as e:
-            # Check if it's a server error (5xx)
-            if "500" <= str(e).split()[1] < "600":
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2**attempt)
-                    print(
-                        f"  Server error for tile ({x},{y},{z}), "
-                        f"retrying in {delay:.1f}s...",
-                        file=sys.stderr,
-                    )
-                    time.sleep(delay)
-                else:
-                    raise
-            else:
-                # Client error - don't retry
-                raise
-
-        except requests.RequestException as e:
-            if attempt < max_retries - 1:
-                delay = base_delay * (2**attempt)
-                print(
-                    f"  Network error for tile ({x},{y},{z}): {e}, "
-                    f"retrying in {delay:.1f}s...",
-                    file=sys.stderr,
-                )
-                time.sleep(delay)
-            else:
-                raise
-
-    raise requests.HTTPError(f"Failed to download tile after {max_retries} attempts")
-
-
-def download_tiles(
-    tiles: Set[TileCoord],
-    url_format: str,
-    base_url: str,
-    force_format: Optional[str] = None,  # 'jpg' or 'png' or None
-    jpeg_quality: int = 85,
-) -> Tuple[Dict[TileCoord, bytes], str]:
-    """Download all tiles and normalize format. Returns (tiles, format)"""
-    tile_data = {}
-    detected_format = None
-    total = len(tiles)
-
-    sorted_tiles = sorted(tiles, key=lambda t: (t[2], t[0], t[1]))
-
-    with tqdm(total=total, desc="Downloading tiles", unit="tile") as pbar:
-        for x, y, z in sorted_tiles:
-            data = download_single_tile(url_format, base_url, x, y, z)
-
-            # Detect format from first tile
-            if detected_format is None:
-                detected_format = detect_image_format(data)
-                pbar.write(f"Detected tile format: {detected_format}")
-
-            if force_format:
-                data = normalize_tile_format(data, force_format, jpeg_quality)
-
-            tile_data[(x, y, z)] = data
-            pbar.update(1)
-
-    final_format = force_format or detected_format
-    return tile_data, final_format
-
-
-# ============================================================================
-# I/O Functions - MBTiles Database
-# ============================================================================
-
-
-def create_mbtiles(path: Path, metadata: Dict[str, str]) -> sqlite3.Connection:
-    """Create MBTiles database with schema and metadata"""
-    conn = sqlite3.connect(path)
-    cur = conn.cursor()
-
-    # Create tables
-    cur.execute(
-        """
-        CREATE TABLE metadata (name TEXT, value TEXT)
-    """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE tiles (
-            zoom_level INTEGER,
-            tile_column INTEGER,
-            tile_row INTEGER,
-            tile_data BLOB,
-            PRIMARY KEY (zoom_level, tile_column, tile_row)
-        )
-    """
-    )
-
-    # Insert metadata
-    for name, value in metadata.items():
-        cur.execute("INSERT INTO metadata (name, value) VALUES (?, ?)", (name, value))
-
-    conn.commit()
-    return conn
-
-
-def write_tiles_batch(conn: sqlite3.Connection, tiles: Dict[TileCoord, bytes]) -> None:
-    """Write tiles to MBTiles database (TMS coordinates)"""
-    cur = conn.cursor()
-
-    for (x, y, z), data in tqdm(tiles.items(), desc="Writing tiles", unit="tile"):
-        y_tms = (2**z - 1) - y
-        cur.execute(
-            "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) "
-            "VALUES (?, ?, ?, ?)",
-            (z, x, y_tms, sqlite3.Binary(data)),
-        )
-
-    conn.commit()
-
-
-# ============================================================================
 # Main Pipeline
 # ============================================================================
 
@@ -843,16 +866,18 @@ def process_track(config: Config) -> None:
         f"  Final tiles to download: {len(tiles)} (zoom {config.zoom_min}-{config.zoom_max})"
     )
 
-    # 4. Download tiles with format detection/normalization
+    # 4. Download tiles with format detection/normalization using a shared session
     force_format = "jpg" if config.jpeg_quality else None
-    tile_data, final_format = download_tiles(
-        tiles,
-        config.url_format,
-        config.base_url,
-        force_format=force_format,
-        jpeg_quality=config.jpeg_quality or 85,
-    )
-    print(f"  Successfully downloaded: {len(tile_data)} tiles ({final_format} format)")
+    with requests.Session() as session:
+        tile_data, final_format = download_tiles(
+            tiles,
+            config.url_format,
+            config.base_url,
+            session=session,
+            force_format=force_format,
+            jpeg_quality=config.jpeg_quality or 85,
+        )
+        print(f"  Successfully downloaded: {len(tile_data)} tiles ({final_format} format)")
 
     if not tile_data:
         print("No tiles downloaded, aborting.", file=sys.stderr)
