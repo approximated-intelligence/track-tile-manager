@@ -99,6 +99,7 @@ from pyproj import Geod, Transformer
 from shapely.geometry import LineString, box, shape
 from shapely.ops import transform
 from shapely.prepared import prep
+from tqdm import tqdm
 
 # Type aliases for clarity
 LatLon = Tuple[float, float]  # WGS84 coordinates
@@ -528,7 +529,7 @@ def create_track_transformers(coords_wgs84: List[LatLon]) -> TrackTransformers:
 
     # Build the oblique Mercator projection string
     print(
-        f"  Oblique Mercator for track center: {center_lon}, {center_lat}, azimuth: {azimuth}"
+        f"  Oblique Mercator, center: {center_lon}, {center_lat}, azimuth: {azimuth}"
     )
     omerc_proj = (
         f"+proj=omerc +lat_0={center_lat} +lonc={center_lon} "
@@ -729,24 +730,22 @@ def download_tiles(
     detected_format = None
     total = len(tiles)
 
-    print(f"Downloading {total} tiles...")
+    sorted_tiles = sorted(tiles, key=lambda t: (t[2], t[0], t[1]))
 
-    for idx, (x, y, z) in enumerate(sorted(tiles, key=lambda t: (t[2], t[0], t[1])), 1):
-        data = download_single_tile(url_format, base_url, x, y, z)
+    with tqdm(total=total, desc="Downloading tiles", unit="tile") as pbar:
+        for x, y, z in sorted_tiles:
+            data = download_single_tile(url_format, base_url, x, y, z)
 
-        # Detect format from first tile
-        if detected_format is None:
-            detected_format = detect_image_format(data)
-            print(f"  Detected tile format: {detected_format}")
+            # Detect format from first tile
+            if detected_format is None:
+                detected_format = detect_image_format(data)
+                pbar.write(f"Detected tile format: {detected_format}")
 
-        # Normalize to target format if specified
-        if force_format:
-            data = normalize_tile_format(data, force_format, jpeg_quality)
+            if force_format:
+                data = normalize_tile_format(data, force_format, jpeg_quality)
 
-        tile_data[(x, y, z)] = data
-
-        if idx % 10 == 0 or idx == total:
-            print(f"  Downloaded {idx}/{total} tiles")
+            tile_data[(x, y, z)] = data
+            pbar.update(1)
 
     final_format = force_format or detected_format
     return tile_data, final_format
@@ -793,11 +792,10 @@ def write_tiles_batch(conn: sqlite3.Connection, tiles: Dict[TileCoord, bytes]) -
     """Write tiles to MBTiles database (TMS coordinates)"""
     cur = conn.cursor()
 
-    for (x, y, z), data in tiles.items():
-        # Convert XYZ to TMS
+    for (x, y, z), data in tqdm(tiles.items(), desc="Writing tiles", unit="tile"):
         y_tms = (2**z - 1) - y
         cur.execute(
-            "INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) "
+            "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) "
             "VALUES (?, ?, ?, ?)",
             (z, x, y_tms, sqlite3.Binary(data)),
         )
@@ -817,6 +815,7 @@ def process_track(config: Config) -> None:
     # 1. Parse and process track geometry
     coords_wgs84 = parse_gpx(config.gpx_path)
     print(f"  Found {len(coords_wgs84)} track points")
+    print(f"  Requested buffer zone: {config.buffer_meters}m")
 
     line_wgs84 = coords_to_linestring_wgs84(coords_wgs84)
     transformers = create_track_transformers(coords_wgs84)
@@ -825,7 +824,6 @@ def process_track(config: Config) -> None:
     track_buffer_wgs84 = transform(transformers.backward.transform, track_buffer_omerc)
     bbox_wgs84 = get_bbox_wgs84_from_track_projection(track_buffer_omerc, transformers)
 
-    print(f"  Buffer: {config.buffer_meters}m")
     print(f"  BBox (WGS84): {bbox_wgs84}")
 
     # 2. Enumerate tiles from meter-based buffer (original logic)
